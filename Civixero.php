@@ -259,7 +259,7 @@ function civixero_civicrm_pageRun(&$page) {
            $createString
            'connector_id' : 0,
            'accounts_needs_update' : 1
-    });
+         });
         cj(this).replaceWith('Xero sync is queued');
       });";
       CRM_Core_Region::instance('contact-basic-info-left')->add(array(
