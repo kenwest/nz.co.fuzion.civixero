@@ -257,7 +257,6 @@ function civixero_civicrm_pageRun(&$page) {
          {'contact_id' : cj(this).data('contact-id'),
            'plugin' : 'xero',
            $createString
-           'connector_id' : 0,
            'accounts_needs_update' : 1
          });
         cj(this).replaceWith('Xero sync is queued');
