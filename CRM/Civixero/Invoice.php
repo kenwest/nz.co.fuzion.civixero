@@ -126,7 +126,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
    * @throws \CRM_Core_Exception
    * @throws \CiviCRM_API3_Exception
    */
-  public function push($params, $limit = 1) {
+  public function push($params, $limit = 10) {
     try {
       $records = $this->getContributionsRequiringPushUpdate($params, $limit);
       $errors = array();
@@ -327,6 +327,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
     $criteria = array(
       'accounts_needs_update' => 1,
       'plugin' => 'xero',
+      'connector_id' => $params['connector_id'],
       'options' => array(
         'sort' => 'error_data',
         'limit' => $limit,
@@ -336,6 +337,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
       $criteria['contribution_id'] = $params['contribution_id'];
       unset($criteria['accounts_needs_update']);
     }
+
     $records = civicrm_api3('account_invoice', 'get', $criteria);
     return $records;
   }
