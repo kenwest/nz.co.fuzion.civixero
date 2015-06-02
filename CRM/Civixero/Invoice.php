@@ -397,25 +397,31 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
    * @throws \CiviCRM_API3_Exception
    */
   protected function savePushResponse($result, $record) {
-    $responseErrors = $this->validateResponse($result);
-    if ($responseErrors) {
-      if (in_array('Invoice not of valid status for modification', $responseErrors)) {
-        // we can't update in Xero as it is approved or voided so let's not keep trying
-        $record['accounts_needs_update'] = 0;
-      }
-      $record['error_data'] = json_encode($responseErrors);
+    if ($result === FALSE) {
+      $responseErrors = array();
+      $record['accounts_needs_update'] = 0;
     }
     else {
-      $record['error_data'] = 'null';
-      if (empty($record['accounts_invoice_id'])) {
-        // For bank transactions this would be
-        // $record['accounts_invoice_id'] = $result['Invoices']['Invoice']['InvoiceID'];
-        $record['accounts_invoice_id'] = $result['BankTransactions']['BankTransaction']['BankTransactionID'];
+      $responseErrors = $this->validateResponse($result);
+      if ($responseErrors) {
+        if (in_array('Invoice not of valid status for modification', $responseErrors)) {
+          // we can't update in Xero as it is approved or voided so let's not keep trying
+          $record['accounts_needs_update'] = 0;
+        }
+        $record['error_data'] = json_encode($responseErrors);
       }
-      $record['accounts_modified_date'] = $result['Invoices']['Invoice']['UpdatedDateUTC'];
-      $record['accounts_data'] = json_encode($result['Invoices']['Invoice']);
-      $record['accounts_status_id'] = $this->mapStatus($result['Invoices']['Invoice']['Status']);
-      $record['accounts_needs_update'] = 0;
+      else {
+        $record['error_data'] = 'null';
+        if (empty($record['accounts_invoice_id'])) {
+          // For bank transactions this would be
+          // $record['accounts_invoice_id'] = $result['Invoices']['Invoice']['InvoiceID'];
+          $record['accounts_invoice_id'] = $result['BankTransactions']['BankTransaction']['BankTransactionID'];
+        }
+        $record['accounts_modified_date'] = $result['Invoices']['Invoice']['UpdatedDateUTC'];
+        $record['accounts_data'] = json_encode($result['Invoices']['Invoice']);
+        $record['accounts_status_id'] = $this->mapStatus($result['Invoices']['Invoice']['Status']);
+        $record['accounts_needs_update'] = 0;
+      }
     }
     //this will update the last sync date & anything hook-modified
     unset($record['last_sync_date']);
@@ -437,6 +443,9 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
    * @return array
    */
   protected function pushToXero($accountsInvoice, $connector_id) {
+    if ($accountsInvoice === FALSE) {
+      return FALSE;
+    }
     $result = $this->getSingleton($connector_id)->Invoices($accountsInvoice);
     return $result;
   }
