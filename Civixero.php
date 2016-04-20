@@ -185,19 +185,19 @@ function civixero_civicrm_navigationMenu(&$menu) {
           'navID' => $navId + 1,
         ),
       ),
-      /*
+
       $navId+2 => array (
         'attributes' => array(
-          'label' => 'Xero Dashboard',
-          'name' => 'Xero Dashboard',
-          'url' => 'civicrm/xero/dashboard',
+          'label' => 'Synchronize contacts',
+          'name' => 'Contact Sync',
+          'url' => 'civicrm/a/#/accounts/contact/sync',
           'permission' => 'administer CiviCRM',
           'operator' => null,
           'separator' => 1,
           'active' => 1,
           'parentID'   => $navId,
         ))
-      */
+
     ),
   );
   if ($parentID) {
@@ -221,22 +221,25 @@ function civixero_civicrm_pageRun(&$page) {
     return;
   }
   if(($contactID = $page->getVar('_contactId')) != FALSE) {
+
     try{
-      $account_contact = civicrm_api3('account_contact', 'getsingle', array(
+      $account_contacts = civicrm_api3('account_contact', 'get', array(
         'contact_id' => $contactID,
-        'return' => 'accounts_contact_id, accounts_needs_update',
+        'return' => 'accounts_contact_id, accounts_needs_update, connector_id',
         'plugin' => 'xero',
       ));
-
-      if (!empty($account_contact['accounts_contact_id'])) {
-        $xeroBlock = _civixero_get_xero_links_block($account_contact['accounts_contact_id']);
-      }
-      elseif (!empty($account_contact['accounts_needs_update'])) {
-        $xeroBlock = _civicrm_get_xero_block_header();
-        $xeroBlock .= "<p> Contact is queued for sync with Xero</p></div>";
-      }
-      else {
+      if (!$account_contacts['count']) {
         throw new Exception('Contact needs syncing');
+      }
+      foreach ($account_contacts['values'] as $account_contact) {
+        $prefix = '';
+        if (!empty($account_contact['accounts_contact_id'])) {
+          $xeroBlock = _civixero_get_xero_links_block($account_contact['accounts_contact_id'], $prefix);
+        }
+        elseif (!empty($account_contact['accounts_needs_update'])) {
+          $xeroBlock = _civicrm_get_xero_block_header();
+          $xeroBlock .= "<p> Contact is queued for sync with Xero</p></div>";
+        }
       }
     }
     catch(Exception $e) {
@@ -245,7 +248,8 @@ function civixero_civicrm_pageRun(&$page) {
         Queue Sync to Xero</a></div>";
 
       CRM_Core_Region::instance('contact-basic-info-left')->add(array(
-        'markup' => $xeroBlock
+        'markup' => $xeroBlock,
+        'type' => 'markup',
       ));
       $createString = '';
       if (!empty($account_contact) && !empty($account_contact['id'])) {
@@ -271,13 +275,47 @@ function civixero_civicrm_pageRun(&$page) {
     return;
   }
 
-
   CRM_Core_Region::instance('contact-basic-info-left')->add(array(
-  'markup' => $xeroBlock
+    'markup' => $xeroBlock,
+    'type' => 'markup',
   ));
 
   //https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=
 }
+
+/**
+ * Get prefix for the connector.
+ *
+ * @param int|null $connector_id
+ *
+ * @return string
+ */
+function _civixero_get_connector_prefix($connector_id) {
+  if (!$connector_id) {
+    return '';
+  }
+  $connectors = _civixero_get_connectors();
+  return $connectors[$connector_id]['name'];
+}
+
+/**
+ * Get available connectors.
+ *
+ * @return string
+ */
+function _civixero_get_connectors() {
+  static $connectors = array();
+  if (empty($connectors)) {
+    $connectors = civicrm_api3('connector', 'get', array('connector_type_id' => 'CiviXero'));
+    if ($connectors['count']) {
+      $connectors = $connectors['values'];
+    }
+    else {
+      $connectors = array(0 => 0);
+    }
+    return $connectors;
+  }
+  }
 
 /**
  * @param $xeroID
@@ -324,7 +362,7 @@ function civixero_civicrm_searchColumns( $objectName, &$headers,  &$values, &$se
   if ($objectName == 'contribution') {
     foreach ($values as &$value) {
       try {
-        $invoiceID = civicrm_api3('account_invoice', 'getvalue', array(
+        $invoiceID = civicrm_api3('AccountInvoice', 'getvalue', array(
           'plugin' => 'xero',
           'contribution_id' => $value['contribution_id'],
           'return' => 'accounts_invoice_id',
@@ -336,4 +374,64 @@ function civixero_civicrm_searchColumns( $objectName, &$headers,  &$values, &$se
       }
     }
   }
+}
+
+/**
+ * Map xero accounts data to generic data.
+ *
+ * @param array $accountsData
+ * @param string $entity
+ * @param string $plugin
+ */
+function civixero_civicrm_mapAccountsData(&$accountsData, $entity, $plugin) {
+  if ($plugin != 'xero' || $entity != 'contact') {
+    return;
+  }
+  $accountsData['civicrm_formatted'] = array();
+  $mappedFields = array(
+    'Name' => 'display_name',
+    'FirstName' => 'first_name',
+    'LastName' => 'last_name',
+    'EmailAddress' => 'email',
+  );
+  foreach ($mappedFields as $xeroField => $civicrmField) {
+    if (!empty($accountsData[$xeroField])) {
+      $accountsData['civicrm_formatted'][$civicrmField] = $accountsData[$xeroField];
+    }
+  }
+
+  if (is_array($accountsData['Addresses']) && is_array($accountsData['Addresses']['Address'])) {
+    foreach ($accountsData['Addresses']['Address'] as $address) {
+      if (count($address) > 1) {
+        $addressMappedFields = array(
+          'AddressLine1' => 'street_address',
+          'City' => 'city',
+          'PostalCode' => 'postal_code',
+        );
+        foreach ($addressMappedFields as $xeroField => $civicrmField) {
+          if (!empty($address[$xeroField])) {
+            $accountsData['civicrm_formatted'][$civicrmField] = $address[$xeroField];
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  if (is_array($accountsData['Phones']) && is_array($accountsData['Phones']['Phone'])) {
+    foreach ($accountsData['Phones']['Phone'] as $address) {
+      if (count($address) > 1) {
+        $addressMappedFields = array(
+          'PhoneNumber' => 'phone',
+        );
+        foreach ($addressMappedFields as $xeroField => $civicrmField) {
+          if (!empty($address[$xeroField])) {
+            $accountsData['civicrm_formatted'][$civicrmField] = $address[$xeroField];
+          }
+        }
+        break;
+      }
+    }
+  }
+
 }

@@ -45,7 +45,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
       if (!empty($result['Invoices'])) {
         $invoices = $result['Invoices']['Invoice'];
         if (isset($invoices['InvoiceID'])) {
-          // the return syntax puts the contact only level higher up when only one contact is involved
+          // The return syntax puts the contact only level higher up when only one contact is involved.
           $invoices = array($invoices);
         }
         foreach ($invoices as $invoice) {
@@ -65,7 +65,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
             continue;
           }
           try {
-            $params['id'] = civicrm_api3('account_invoice', 'getvalue', array(
+            $params['id'] = civicrm_api3('AccountInvoice', 'getvalue', array(
               'return' => 'id',
               'accounts_invoice_id' => $invoice['InvoiceID'],
               'plugin' => $this->_plugin,
@@ -75,7 +75,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
             // this is an update - but lets just check the contact id doesn't exist in the account_contact table first
             // e.g if a list has been generated but not yet pushed
             try {
-              $existing = civicrm_api3('account_invoice', 'getsingle', array(
+              $existing = civicrm_api3('AccountInvoice', 'getsingle', array(
                 'return' => 'id',
                 'contribution_id' => $invoice['InvoiceNumber'],
                 'plugin' => $this->_plugin,
@@ -91,7 +91,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
             }
           }
           try {
-            civicrm_api3('account_invoice', 'create', $params);
+            civicrm_api3('AccountInvoice', 'create', $params);
           }
           catch (CiviCRM_API3_Exception $e) {
             $errors[] = ts('Failed to store ') . $invoice['InvoiceNumber'] . ' (' . $invoice['InvoiceID'] . ' )'
@@ -169,6 +169,8 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
    *   Contact Object/ array as expected by accounts package
    */
   protected function mapToAccounts($invoiceData, $accountsID) {
+    // Initially Assume that tax is not set up, and all amounts are tax inclusive.
+    $line_amount_types = 'Inclusive';
 
     $lineItems = array();
     foreach ($invoiceData['line_items'] as $lineItem) {
@@ -178,6 +180,11 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
         "UnitAmount"  => $lineItem['unit_price'],
         "AccountCode" => !empty($lineItem['accounting_code']) ? $lineItem['accounting_code'] : $this->getDefaultAccountCode(),
       );
+
+      if(!empty($lineItem['tax_amount'])) {
+        // If we discover a non-zero tax_amount, switch to tax exclusive amounts.
+        $line_amount_types = 'Exclusive';
+      }
     }
 
     $new_invoice = array(
@@ -191,7 +198,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
       "InvoiceNumber"   => $invoiceData['id'],
       "CurrencyCode"    => CRM_Core_Config::singleton()->defaultCurrency,
       "Reference"       => $invoiceData['display_name'] . ' ' . $invoiceData['contribution_source'],
-      "LineAmountTypes" => "Inclusive",
+      "LineAmountTypes" => $line_amount_types,
       'LineItems' => array('LineItem' => $lineItems),
     );
 
@@ -338,7 +345,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
       unset($criteria['accounts_needs_update']);
     }
 
-    $records = civicrm_api3('account_invoice', 'get', $criteria);
+    $records = civicrm_api3('AccountInvoice', 'get', $criteria);
     return $records;
   }
 
@@ -357,7 +364,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
 
     $accountsInvoiceID = isset($record['accounts_invoice_id']) ? $record['accounts_invoice_id'] : NULL;
     $contributionID = $record['contribution_id'];
-    $civiCRMInvoice = civicrm_api3('account_invoice', 'getderived', array(
+    $civiCRMInvoice = civicrm_api3('AccountInvoice', 'getderived', array(
       'id' => $contributionID,
     ));
 
@@ -440,7 +447,7 @@ class CRM_Civixero_Invoice extends CRM_Civixero_Base {
     if (empty($record['accounts_modified_date']) || $record['accounts_modified_date'] == '0000-00-00 00:00:00') {
       unset($record['accounts_modified_date']);
     }
-    civicrm_api3('account_invoice', 'create', $record);
+    civicrm_api3('AccountInvoice', 'create', $record);
     return $responseErrors;
   }
 
