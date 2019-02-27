@@ -179,14 +179,54 @@ function civixero_civicrm_navigationMenu(&$menu) {
           'url' => 'civicrm/xero/settings',
           'permission' => 'administer CiviCRM',
           'operator' => NULL,
-          'separator' => 1,
+          'separator' => 0,
           'active' => 1,
           'parentID' => $navId,
           'navID' => $navId + 1,
         ),
       ),
 
-      $navId+2 => array (
+        $navId + 2 => array(
+            'attributes' => array(
+                'label' => 'Xero Error Logs',
+                'name' => 'Xero Error Logs',
+                'url' => NULL,
+                'permission' => 'administer CiviCRM',
+                'operator' => NULL,
+                'separator' => 1,
+                'active' => 1,
+                'parentID' => $navId,
+                'navID' => $navId + 2,
+            ),
+            'child' => array(
+                $navId+4 => array (
+                  'attributes' => array(
+                    'label' => 'Contact Errors',
+                    'name' => 'Contact Errors',
+                    'url' => 'civicrm/xero/errorlog',
+                    'permission' => 'administer CiviCRM',
+                    'operator' => null,
+                    'separator' => 0,
+                    'active' => 1,
+                    'parentID'   => $navId + 2,
+                  )
+                ),
+                $navId+5 => array (
+                  'attributes' => array(
+                    'label' => 'Invoice Errors',
+                    'name' => 'Invoice Errors',
+                    'url' => 'civicrm/xero/errorlog?for=invoice',
+                    'permission' => 'administer CiviCRM',
+                    'operator' => null,
+                    'separator' => 0,
+                    'active' => 1,
+                    'parentID'   => $navId + 5,
+                  )
+                ),
+            ),
+        ),
+
+      $navId+3 => array (
         'attributes' => array(
           'label' => 'Synchronize contacts',
           'name' => 'Contact Sync',
@@ -195,7 +235,7 @@ function civixero_civicrm_navigationMenu(&$menu) {
           'operator' => null,
           'separator' => 1,
           'active' => 1,
-          'parentID'   => $navId,
+          'parentID'   => $navId + 3,
         ))
 
     ),
@@ -206,6 +246,93 @@ function civixero_civicrm_navigationMenu(&$menu) {
   else {
     $menu[$navId] = $navigationMenu;
   }
+}
+
+/**
+ * Gettings contributions of sinlge contact
+ *
+ * @param $contactid
+ */
+function getContactContributions($contactid) {
+    $contributions = civicrm_api3("Contribution","get",array(
+        "contact_id" => $contactid,
+        "return"     => array("contribution_id"),
+        "sequential" => TRUE
+    ));
+    $contributions = array_column($contributions["values"], "id");
+    return $contributions;
+}
+
+/**
+ * Gettings errored invoices of given contributions
+ *
+ * @param $contributions
+ */
+function getErroredInvoicesOfContributions($contributions) {
+    $invoices = civicrm_api3("AccountInvoice","get",array(
+        "plugin"          => "xero",
+        "sequential"      => TRUE,
+        "contribution_id" => array("IN" => $contributions),
+        "error_data"      => array("<>" => "")
+    ));
+    return $invoices;
+}
+
+function _civixero_append_sync_errors(&$xeroBlock, $account_contact) {
+    if(empty($account_contact['accounts_needs_update']) && !empty($account_contact["error_data"])) {
+        $xeroBlock .= "<p class='xeroerror'> Contact <span class='error'>sync error</span> with Xero <a href='#' class='helpicon error xeroerror-info' data-xeroerrorid='".$account_contact["id"]."'></a></p>";
+    }
+
+    if (!empty($account_contact['accounts_contact_id'])) {
+        $contributions = getContactContributions($account_contact["contact_id"]);
+        if(count($contributions)) {
+            $invoices = getErroredInvoicesOfContributions($contributions);
+            if($invoices["count"]) {
+                $xeroBlock .= "<p class='xeroerror second'> ".$invoices["count"]." Contribution".(($invoices["count"] > 1)? 's' : '')." <span class='error'>not synced</span> with Xero <a href='#' class='helpicon error xeroerror-invoice-info' data-xeroerrorid='".$account_contact["contact_id"]."'></a></p>";
+            }
+        }
+    }
+}
+
+/**
+ * Implementation of hook_civicrm_check.
+ *
+ * Add a check to the status page. Check if there are any account contact or invoice sync errors.
+ *
+ * @param $page
+ */
+function civixero_civicrm_check(&$messages) {
+
+    $accountContactErrors = civicrm_api3("AccountContact","getcount",array(
+        "error_data"  =>  array("NOT LIKE" => "%error_cleared%"),
+        "plugin"      => "xero"
+    ));
+    $accountInvoiceErrors = civicrm_api3("AccountInvoice","getcount",array(
+        "error_data"  =>  array("NOT LIKE" => "%error_cleared%"),
+        "plugin"      => "xero"
+    ));
+    $errorMessage = "";
+    $errorsPageUrl = CRM_Utils_System::url('civicrm/xero/errorlog');
+
+    if($accountContactErrors > 0) {
+        $errorMessage .= 'Found '.$accountContactErrors.' contact sync errors. <a href="'.$errorsPageUrl.'" target="_blank">Click here</a> to resolve them.';
+        if($accountInvoiceErrors > 0) {
+            $errorMessage .= "<br><br>";
+        }
+    }
+    if($accountInvoiceErrors > 0) {
+        $errorMessage .= 'Found '.$accountInvoiceErrors.' invoice sync errors. <a href="'.$errorsPageUrl.'?for=invoice" target="_blank">Click here</a> to resolve them.';
+    }
+
+    if($accountInvoiceErrors > 0 || $accountContactErrors >0) {
+        $messages[] = new CRM_Utils_Check_Message(
+            'civixero_sync_errors',
+            $errorMessage,
+            'Xero Sync Errors',
+            \Psr\Log\LogLevel::ERROR,
+            'fa-refresh'
+        );
+    }
 }
 
 /**
@@ -220,25 +347,33 @@ function civixero_civicrm_pageRun(&$page) {
   if ($pageName != 'CRM_Contact_Page_View_Summary' || !CRM_Core_Permission::check('view all contacts')) {
     return;
   }
-  if(($contactID = $page->getVar('_contactId')) != FALSE) {
 
+  if(($contactID = $page->getVar('_contactId')) != FALSE) {
+    $connectors = _civixero_get_connectors();
+    $xeroBlock = '';
     try{
       $account_contacts = civicrm_api3('account_contact', 'get', array(
         'contact_id' => $contactID,
-        'return' => 'accounts_contact_id, accounts_needs_update, connector_id',
+        'return' => 'accounts_contact_id, accounts_needs_update, connector_id, error_data, id, contact_id',
         'plugin' => 'xero',
+        'connector_id' => array('IN' => array_keys($connectors)),
       ));
+
       if (!$account_contacts['count']) {
         throw new Exception('Contact needs syncing');
       }
       foreach ($account_contacts['values'] as $account_contact) {
-        $prefix = '';
+        $prefix = _civixero_get_connector_prefix($account_contact['connector_id']);
         if (!empty($account_contact['accounts_contact_id'])) {
-          $xeroBlock = _civixero_get_xero_links_block($account_contact['accounts_contact_id'], $prefix);
+          $xeroBlock .= _civixero_get_xero_links_block($account_contact, $prefix);
         }
         elseif (!empty($account_contact['accounts_needs_update'])) {
-          $xeroBlock = _civicrm_get_xero_block_header();
+          $xeroBlock .= _civicrm_get_xero_block_header();
           $xeroBlock .= "<p> Contact is queued for sync with Xero</p></div>";
+        } elseif(!empty($account_contact["error_data"])) {
+            $xeroBlock .= _civicrm_get_xero_block_header();
+            _civixero_append_sync_errors($xeroBlock, $account_contact);
+            $xeroBlock .= "</div>";
         }
       }
     }
@@ -280,6 +415,9 @@ function civixero_civicrm_pageRun(&$page) {
     'type' => 'markup',
   ));
 
+  CRM_Core_Resources::singleton()->addStyleFile('nz.co.fuzion.civixero','css/civixero_styles.css');
+  CRM_Core_Resources::singleton()->addScriptFile('nz.co.fuzion.civixero','js/civixero_errors.js');
+
   //https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=
 }
 
@@ -306,23 +444,24 @@ function _civixero_get_connector_prefix($connector_id) {
 function _civixero_get_connectors() {
   static $connectors = array();
   if (empty($connectors)) {
-    $connectors = civicrm_api3('connector', 'get', array('connector_type_id' => 'CiviXero'));
-    if ($connectors['count']) {
+    try {
+      $connectors = civicrm_api3('connector', 'get', array('connector_type_id' => 'CiviXero'));
       $connectors = $connectors['values'];
     }
-    else {
+    catch (CiviCRM_API3_Exception $e) {
       $connectors = array(0 => 0);
     }
-    return $connectors;
   }
-  }
+  return $connectors;
+}
 
 /**
  * @param $xeroID
  *
  * @return string
  */
-function _civixero_get_xero_links_block($xeroID) {
+function _civixero_get_xero_links_block($account_contact, $connector_name) {
+  $xeroID = $account_contact['accounts_contact_id'];
   $xeroLinks = array(
     'view_transactions' => array(
       'link' => 'https://go.xero.com/Reports/report.aspx?reportId=be392447-762b-444d-9cde-87c6bd185d00&report=TransactionsByContact&invoiceType=INVOICETYPE%2fACCREC&addToReportId=cf6fedeb-2188-493c-96e2-b862198f9b46&addToReportTitle=Income+by+Contact&reportClass=TransactionsByContact&contact=',
@@ -334,11 +473,11 @@ function _civixero_get_xero_links_block($xeroID) {
     )
   );
 
-  $xeroBlock = _civicrm_get_xero_block_header();
+  $xeroBlock = _civicrm_get_xero_block_header() . $connector_name;
   foreach ($xeroLinks as $link) {
     $xeroBlock .= "<div class='crm-content'><a href='{$link['link']}{$xeroID}'>{$link['link_label']}</a></div>";
   }
-
+  _civixero_append_sync_errors($xeroBlock, $account_contact);
   $xeroBlock .= "</div>";
   return $xeroBlock;
 }
@@ -434,4 +573,11 @@ function civixero_civicrm_mapAccountsData(&$accountsData, $entity, $plugin) {
     }
   }
 
+}
+
+/**
+ * Implements hook_civicrm_accountsync_plugins().
+ */
+function civixero_civicrm_accountsync_plugins(&$plugins) {
+  $plugins[] = 'xero';
 }
