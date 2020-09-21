@@ -1,15 +1,18 @@
 <?php
+
 /**
  * Class CRM_Civixero_Base
  *
  * Base class for classes that interact with Xero using push and pull methods.
  */
 class CRM_Civixero_Base {
+
   private static $singleton;
-  private $_xero_key;
-  private $_xero_secret;
-  private $_xero_public_certificate;
-  private $_xero_private_key;
+
+  private $_xero_access_token;
+
+  private $_xero_tenant_id;
+
   protected $_plugin = 'xero';
 
   protected $accounts_contact;
@@ -30,29 +33,22 @@ class CRM_Civixero_Base {
    *
    * @throws \CRM_Core_Exception
    */
-  public function __construct($parameters = array()) {
+  public function __construct($parameters = []) {
     $force = FALSE;
     $this->connector_id = CRM_Utils_Array::value('connector_id', $parameters, 0);
-    $variables = array(
-      'xero_key',
-      'xero_secret',
-      'xero_public_certificate',
-      'xero_private_key',
-    );
-    foreach ($variables as $var) {
-      $value = CRM_Utils_Array::value($var, $parameters);
-      if (empty($value)) {
-        $value = $this->getSetting($var);
-      }
-      if ($value != $this->{'_' . $var}) {
-        $force = TRUE;
-        $this->{'_' . $var} = $value;
-      }
-      if (empty($value)) {
-        throw new CRM_Core_Exception($var . ts(' has not been set'));
-      }
+    // Currently only default connection (without nz.co.fusion.connectors) is supported.
+    if ($this->connector_id == 0) {
+      $xeroConnect = CRM_Civixero_OAuth2_Xero::singleton();
+      $this->_xero_access_token = $xeroConnect->getToken();
+      $this->_xero_tenant_id = $xeroConnect->getTenantID();
     }
-    $this->singleton($this->_xero_key, $this->_xero_secret, $this->_xero_public_certificate, $this->_xero_private_key, $this->connector_id, $force);
+    else {
+      // TODO: implement for connectors.
+      throw new CRM_Core_Exception(
+          "Currently only default Xero connection (without nz.co.fusion.connectors) is supported."
+          );
+    }
+    $this->singleton($this->_xero_access_token, $this->_xero_tenant_id, $this->connector_id, $force);
   }
 
   /**
@@ -68,16 +64,16 @@ class CRM_Civixero_Base {
   protected function getAccountsContact() {
     if (empty($this->accounts_contact)) {
       if (empty($this->connector_id)) {
-        $this->accounts_contact = civicrm_api3('domain', 'getvalue', array(
+        $this->accounts_contact = civicrm_api3('domain', 'getvalue', [
           'current_domain' => TRUE,
           'return' => 'contact_id',
-        ));
+        ]);
       }
       else {
-        $this->accounts_contact = civicrm_api3('connector', 'getvalue', array(
+        $this->accounts_contact = civicrm_api3('connector', 'getvalue', [
           'id' => $this->connector_id,
           'return' => 'contact_id',
-        ));
+        ]);
       }
     }
     return $this->accounts_contact;
@@ -99,19 +95,17 @@ class CRM_Civixero_Base {
   /**
    * Singleton function.
    *
-   * @param string $civixero_key
-   * @param string $civixero_secret
-   * @param string $publicCertificate
-   * @param string $privateKey
+   * @param string $token
+   * @param string $tenant_id
    * @param int $connector_id
    * @param bool $force
    *
    * @return \CRM_Extension_System
    */
-  protected function singleton($civixero_key, $civixero_secret, $publicCertificate, $privateKey, $connector_id, $force = FALSE) {
+  protected function singleton($token, $tenant_id, $connector_id, $force = FALSE) {
     if (!self::$singleton[$connector_id] || $force) {
       require_once 'packages/Xero/Xero.php';
-      self::$singleton[$connector_id] = new Xero($civixero_key, $civixero_secret, $publicCertificate, $privateKey);
+      self::$singleton[$connector_id] = new Xero($token, $tenant_id);
     }
 
     return self::$singleton[$connector_id];
@@ -139,27 +133,27 @@ class CRM_Civixero_Base {
    * @return mixed
    */
   protected function getSetting($var) {
-
+    
     if ($this->connector_id > 0) {
-      static $connectors = array();
+      static $connectors = [];
       if (empty($connectors[$this->connector_id])) {
-        $connector = civicrm_api3('connector', 'getsingle', array('id' => $this->connector_id));
-        $connectors[$this->connector_id] = array(
+        $connector = civicrm_api3('connector', 'getsingle', ['id' => $this->connector_id]);
+        $connectors[$this->connector_id] = [
           'xero_key' => $connector['field1'],
           'xero_secret' => $connector['field2'],
           'xero_public_certificate' => $connector['field3'],
           'xero_private_key' => $connector['field4'],
           // @todo not yet configurable per selector.
           'xero_default_invoice_status' => 'SUBMITTED',
-        );
+        ];
       }
       return $connectors[$this->connector_id][$var];
     }
     else {
-      return civicrm_api3('setting', 'getvalue', array(
+      return civicrm_api3('setting', 'getvalue', [
         'name' => $var,
         'group' => 'Xero Settings',
-      ));
+      ]);
     }
   }
 
@@ -190,14 +184,18 @@ class CRM_Civixero_Base {
    */
   protected function validateResponse($response) {
     $message = '';
-    $errors  = array();
+    $errors = [];
     // Comes back as a string for oauth errors.
     if (is_string($response)) {
       $responseParts = explode('&', urldecode($response));
-      if (CRM_Utils_Array::value(0, $responseParts) == 'oauth_problem=token_rejected') {
+      $problem = str_replace('oauth_problem=', '', CRM_Utils_Array::value(0, $responseParts));
+      if ($problem == 'oauth_problem=token_rejected') {
         throw new Exception('Invalid credentials');
       }
-      throw new CRM_Civixero_Exception_XeroThrottle($responseParts['oauth_problem']);
+      if ($problem == 'signature_invalid') {
+        throw new Exception('Invalid signature - your key may be invalid');
+      }
+      throw new CRM_Civixero_Exception_XeroThrottle($problem);
     }
     if (!empty($response['ErrorNumber'])) {
       $errors[] = $response['Message'];
@@ -211,9 +209,9 @@ class CRM_Civixero_Base {
         if (is_array($value[0])) {
           foreach ($value as $errorMessage) {
             if (trim($errorMessage['Message']) == 'Account code must be specified') {
-              return array(
+              return [
                 'You need to set up the account code',
-              );
+              ];
             }
             $message .= " " . $errorMessage['Message'];
           }
